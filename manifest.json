@@ -1,6 +1,27 @@
 {
-  "name": "ccgg-cell",
-  "description": "ccgg-cell's personal website",
+  "name": "Artifact Atlas",
+  "short_name": "Artifact Atlas",
+  "description": "NC Civil War Field Guide and Relic Hunter Community",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "theme_color": "#c9a84c"
+  "orientation": "portrait",
+  "theme_color": "#c9a84c",
+  "background_color": "#0e0b07",
+  "lang": "en",
+  "categories": ["history","education"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
 }
