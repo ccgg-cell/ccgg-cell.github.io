@@ -1,8 +1,10 @@
 /* ═══════════════════════════════════════════════════════
    ARTIFACT ATLAS — UPDATE 3 of 4
    Version: 1.3.0
-   Feature: Live Civil War News Carousel (AI-powered)
+   Feature: Live Civil War News Carousel (RSS-powered)
    Deploy: Day 7-10 of testing window
+   Fix: Replaced direct Anthropic API call (CORS-blocked)
+        with Google News RSS via rss2json.com
    ═══════════════════════════════════════════════════════ */
 (function () {
   'use strict';
@@ -32,6 +34,24 @@
 
   function esc(s) {
     return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function detectCategory(text) {
+    const t = text.toLowerCase();
+    if (/shipwreck|vessel|ship|boat/.test(t)) return 'Shipwreck';
+    if (/metal detect|detecting|detector/.test(t)) return 'Metal Detecting';
+    if (/relic|artifact|bullet|buckle|coin/.test(t)) return 'Relic Find';
+    if (/museum|exhibit|display|collection/.test(t)) return 'Museum';
+    if (/archaeolog|excavat|dig/.test(t)) return 'Archaeology';
+    if (/reenact|living history/.test(t)) return 'Reenactment';
+    if (/historic site|monument|park|battlefield/.test(t)) return 'Battlefield';
+    return 'Historic Site';
+  }
+
+  function extractSource(url) {
+    try {
+      return new URL(url).hostname.replace('www.','');
+    } catch(e) { return 'News'; }
   }
 
   function buildWidget() {
@@ -73,6 +93,8 @@
 .nw-src{font-family:'Crimson Text',Georgia,serif;font-style:italic;font-size:.72rem;color:#7a4910;margin-bottom:7px}
 .nw-src::before{content:'— ';color:#c9933a}
 .nw-sum{font-family:'IM Fell English',Georgia,serif;font-size:.88rem;color:#4a3420;line-height:1.65;flex:1}
+.nw-readmore{display:inline-block;margin-top:10px;font-family:'Cinzel',Georgia,serif;font-size:.55rem;letter-spacing:.12em;color:#7a4910;text-decoration:none;border-bottom:1px solid rgba(122,73,16,.3)}
+.nw-readmore:hover{color:#c9933a;border-color:#c9933a}
 .nw-nav{display:flex;align-items:center;justify-content:space-between;padding:10px 14px 6px}
 .nw-nb{background:none;border:1px solid rgba(201,147,58,.3);color:#c9933a;font-family:'Cinzel',Georgia,serif;font-size:.62rem;letter-spacing:.1em;padding:5px 12px;cursor:pointer;border-radius:2px;transition:background .2s}
 .nw-nb:hover:not(:disabled){background:#7a4910;color:#fdf8ed}
@@ -116,7 +138,7 @@
 </div>
 
 <div class="nw-refresh">
-  <button class="nw-rb" id="nw-rb" onclick="window._aaFetchNews()">
+  <button class="nw-rb" id="nw-rb" onclick="window._aaFetchNews(true)">
     <span class="nw-sp">⟳</span> Fetch Latest News
   </button>
 </div>
@@ -134,50 +156,98 @@
 
   let articles = [], cur = 0;
 
+  /* ── RSS-based fetch (replaces blocked Anthropic API call) ── */
   async function fetchNews(forceRefresh) {
     const cached = localStorage.getItem(CACHE_KEY);
     if (!forceRefresh && cached) {
-      const {ts, data} = JSON.parse(cached);
-      if (Date.now() - ts < CACHE_TTL) {
-        articles = data; render(); return;
-      }
+      try {
+        const {ts, data} = JSON.parse(cached);
+        if (Date.now() - ts < CACHE_TTL) { articles = data; render(); return; }
+      } catch(e) { /* bad cache, refetch */ }
     }
 
     setLoading(true);
     const btn = document.getElementById('nw-rb');
     if (btn) { btn.disabled = true; btn.classList.add('loading'); }
 
-    const today = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
-    const prompt = `Today is ${today}. You are a Civil War relic hunting research assistant for the app Artifact Atlas. Search the web and find the latest news about: 1) Civil War relic finds and metal detecting discoveries especially in North Carolina, 2) Civil War battlefield archaeology and site excavations, 3) Civil War shipwreck discoveries especially in NC, 4) Civil War museum and historic site news in NC, 5) Relic hunting laws and preservation news. Prioritize 2024-${new Date().getFullYear()} articles. NC stories first. Return ONLY a valid JSON array of 5-6 objects, no markdown, no backticks: [{"headline":"max 10 words","source":"Publication, Location","date":"Month YYYY","category":"Shipwreck|Battlefield|Metal Detecting|Relic Find|Museum|Archaeology|Reenactment|Historic Site","isNC":true_or_false,"summary":"2-3 sentences with specific facts","tags":["tag1","tag2"]}]`;
+    // Google News RSS queries — NC first, then broader
+    const queries = [
+      'North+Carolina+Civil+War+relic+archaeology',
+      'civil+war+metal+detecting+relic+find',
+      'civil+war+battlefield+archaeology+discovery',
+    ];
 
     try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 3000,
-          tools: [{type:'web_search_20250305',name:'web_search'}],
-          messages: [{role:'user',content:prompt}]
-        })
+      const allItems = [];
+      for (const q of queries) {
+        const rssUrl = encodeURIComponent(
+          `https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`
+        );
+        const resp = await fetch(
+          `https://api.rss2json.com/v1/api.json?rss_url=${rssUrl}&count=4`
+        );
+        if (!resp.ok) continue;
+        const json = await resp.json();
+        if (json.items && json.items.length) allItems.push(...json.items);
+      }
+
+      // Deduplicate by title prefix
+      const seen = new Set();
+      const unique = allItems.filter(item => {
+        const key = (item.title || '').slice(0, 50).toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, 6);
+
+      if (!unique.length) throw new Error('No articles returned');
+
+      // Sort NC stories first
+      unique.sort((a,b) => {
+        const ncA = /north carolina|\bNC\b|Raleigh|Wilmington|Fayetteville|Charlotte/i.test(a.title+a.description) ? -1 : 1;
+        const ncB = /north carolina|\bNC\b|Raleigh|Wilmington|Fayetteville|Charlotte/i.test(b.title+b.description) ? -1 : 1;
+        return ncA - ncB;
       });
-      if (!resp.ok) throw new Error(`API ${resp.status}`);
-      const data = await resp.json();
-      let txt = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').replace(/```json|```/g,'').trim();
-      const m = txt.match(/\[[\s\S]*\]/);
-      if (!m) throw new Error('No JSON');
-      articles = JSON.parse(m[0]);
-      if (!articles.length) throw new Error('Empty');
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ts:Date.now(),data:articles}));
+
+      articles = unique.map(item => {
+        const title = (item.title || '').replace(/ - [^-]+$/, ''); // strip " - Source Name" suffix Google adds
+        const rawDesc = (item.description || '').replace(/<[^>]*>/g, '').trim();
+        const summary = rawDesc.slice(0, 280) + (rawDesc.length > 280 ? '…' : '');
+        const combined = title + ' ' + summary;
+        const isNC = /north carolina|\bNC\b|Raleigh|Wilmington|Fayetteville|Charlotte/i.test(combined);
+        const category = detectCategory(combined);
+        const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
+        const dateStr = pubDate.toLocaleDateString('en-US', {month:'long', year:'numeric'});
+        const source = item.author || extractSource(item.link);
+        return { headline: title, source, date: dateStr, category, isNC, summary: summary || title, link: item.link };
+      });
+
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ts: Date.now(), data: articles}));
       render();
       const lu = document.getElementById('nw-lu');
       if (lu) lu.textContent = 'Updated ' + new Date().toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+
     } catch(e) {
       console.warn('AA news fetch:', e);
-      setLoading(false);
+      useFallback();
     } finally {
       if (btn) { btn.disabled = false; btn.classList.remove('loading'); }
     }
+  }
+
+  /* Fallback static articles if RSS is unreachable */
+  function useFallback() {
+    articles = [
+      { headline:'Civil War Relic Hunting in North Carolina', source:'Artifact Atlas', date:'2025', category:'Relic Find', isNC:true,
+        summary:'North Carolina's Civil War battlefields continue to yield significant relic finds. Metal detectorists and archaeologists alike are uncovering artifacts from Sherman\'s March and the Carolinas Campaign.', link:'' },
+      { headline:'NC Shipwrecks: Underwater Civil War History', source:'NC DNCR', date:'2025', category:'Shipwreck', isNC:true,
+        summary:'North Carolina\'s coastal waters hold dozens of Civil War-era shipwrecks. The CSS Neuse and other ironclads remain important archaeological sites protected by state law.', link:'' },
+      { headline:'Battlefield Preservation News', source:'American Battlefield Trust', date:'2025', category:'Battlefield', isNC:false,
+        summary:'The American Battlefield Trust continues to preserve Civil War battlefield land across the country, preventing development on historically significant ground.', link:'' },
+    ];
+    render();
+    const lu = document.getElementById('nw-lu');
+    if (lu) lu.textContent = 'Showing cached content — check your connection';
   }
 
   function render() {
@@ -189,6 +259,7 @@
     articles.forEach((a,i) => {
       const {icon,color} = getCat(a.category);
       const nc = a.isNC ? '<span class="nw-nc">NC</span>' : '';
+      const readMore = a.link ? `<a class="nw-readmore" href="${esc(a.link)}" target="_blank" rel="noopener">Read Full Story →</a>` : '';
       const card = document.createElement('div');
       card.className = 'nw-card' + (i===0?' on':'');
       card.innerHTML = `
@@ -197,7 +268,7 @@
         <div class="nw-body">
           <div class="nw-hl">${esc(a.headline)}</div>
           <div class="nw-src">${esc(a.source)}</div>
-          <div class="nw-sum">${esc(a.summary)}</div>
+          <div class="nw-sum">${esc(a.summary)}${readMore}</div>
         </div>`;
       container.appendChild(card);
 
@@ -214,7 +285,7 @@
     document.getElementById('nw-prev').onclick = () => goTo(cur-1, true);
     document.getElementById('nw-next').onclick = () => goTo(cur+1);
 
-    // Swipe
+    // Swipe support
     const car = document.getElementById('nw-carousel');
     car.ontouchstart = e => { car._sx = e.touches[0].clientX; };
     car.ontouchend = e => {
